@@ -7,7 +7,7 @@
 
 #include <stdio.h>
 #include <stdint.h>
-#include <unistd.h>
+#include <getopt.h>
 
 #include <net/ethernet.h>
 #include <netinet/ip.h>
@@ -62,9 +62,42 @@ int talk_with_me(int argc, char** argv, struct configs* cfg)
 {
 	int r = 0;
 	int opt;
+	static int verbose_flag;
 
-	while ((opt = getopt(argc, argv, "hab:")) != -1) {
+	while (1) {
+		static struct option long_options[] = {
+			{"test", no_argument, 0, 0},
+			{"test-print", required_argument, 0, 0},
+			{"verbose_0", required_argument, &verbose_flag, 0},
+			{"verbose_1", required_argument, &verbose_flag, 1},
+			{"verbose_2", required_argument, &verbose_flag, 2},
+			{"verbose_3", required_argument, &verbose_flag, 3},
+			{"verbose_4", no_argument, &verbose_flag, 4},
+			{0,0,0,0}
+		};
+
+		int longindex = 0;
+
+		opt = getopt_long(argc, argv, "hab:",
+				long_options, &longindex);
+		
+		if (opt == -1)
+			break;
 		switch (opt) {
+		case 0:
+			printf("argu: %s: ", long_options[longindex].name);
+			if (optarg)
+				printf("%s", optarg);
+			if (long_options[longindex].flag != 0) {
+				printf("flag: %lu: ",
+					(uint64_t)(long_options[longindex].flag));
+				printf("verbose_flag: %d ", verbose_flag);
+				printf("*flag: %d: ",
+					*(long_options[longindex].flag));
+				printf("val: %d: ", long_options[longindex].val);
+			}
+			printf("\n");
+			break;
 		case 'a':
 			fprintf(stderr, "found param a.\n");
 			break;
