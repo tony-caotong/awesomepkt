@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <strings.h>
 #include <string.h>
+#include <unistd.h>
 #include <getopt.h>
 
 #include <net/ethernet.h>
@@ -23,6 +24,9 @@
 #include <sys/ioctl.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+
+#include <errno.h>
+#include <assert.h>
 
 #define ASM_ERR_NONE 0x00000000
 #define ASM_ERR_PARM 0x00000001
@@ -96,13 +100,13 @@ err:
 int prepare_tcp(const struct configs* cfg, struct iphdr* iph,
 				unsigned char* buf, size_t size)
 {
-
+	return -1;
 }
 
 int prepare_udp(const struct configs* cfg, struct iphdr* iph,
 				unsigned char* buf, size_t size)
 {
-
+	return -1;
 }
 
 
@@ -122,11 +126,11 @@ int prepare_ipv4(const struct configs* cfg, unsigned char* buf, size_t size)
 {
 	int hdrlen, r;
 	struct iphdr* iph;
-	struct udphdr* udph;
+	struct udphdr* udph __attribute((unused));
 
 	/* 1. format l4 header. */
 	iph = (struct iphdr*)(buf);
-	hdrlen += sizeof(struct iphdr);
+	hdrlen = sizeof(struct iphdr);
 
 	/* 2. format payload. */
 	r = prepare_ipv4_payload(cfg, iph, buf+hdrlen, size-hdrlen);
@@ -152,7 +156,7 @@ int prepare_ethernet(const struct configs* cfg, unsigned char* buf,
 
 	/* 1. format mac header. */
 	eh = (struct ether_header*)buf;
-	hdrlen += sizeof(struct ether_header);
+	hdrlen = sizeof(struct ether_header);
 
 	/* 2. format ethernet payload. */
 	r = prepare_ether_payload(cfg, eh, buf+hdrlen, size-hdrlen);
@@ -317,13 +321,14 @@ err:
 	return r;
 }
 
-int fucking_push()
+int fucking_push(unsigned char* buf, size_t length)
 {
 	printf("go in fucking push!\n");
 	int sock;
+	int r = 0, sent;
 	struct sockaddr_ll addr;
 
-	if ((sock = socket(AF_PACKET, SOCK_DGRAM, htons(ETH_P_ALL))) < 0) {
+	if ((sock = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL))) < 0) {
 		perror("socket: ");
 		return -1;
 	}
@@ -334,42 +339,70 @@ int fucking_push()
 	strncpy(req.ifr_name, "tap-dpdk-2", sizeof(req.ifr_name));
 	if (ioctl(sock, SIOCGIFINDEX, &req) < 0) {
 		perror("ioctl: ");
-		return -1;
+		r = -1;
+		goto err;
 	}
 	addr.sll_ifindex =  req.ifr_ifindex;
 	if (bind(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
 		perror("bind: ");
-		return -1;
+		r = -1;
+		goto err;
 	}
 
-	while(1) {
-		int r = recv(sock, pkt_buf, MAX_PKT_LEN, 0);
-		if (r < 0)
-			continue;
-		unsigned char* p = pkt_buf;
-		int j;
-		printf("Found pack: [size: %d]\n", j);
-		for (j = 0; j < r; j++) {
-			if (j % 32 == 0)
-				printf("0x");
-			printf("%02x", *(p++));
-			if ((j + 1)%32 == 0) {
+/*	strncpy(req.ifr_name, "tap-dpdk-2", sizeof(req.ifr_name));
+	if (ioctl(sock, SIOCGIFINDEX, &req) < 0) {
+		perror("ioctl: ");
+		r = -1;
+		goto err;
+	}
+	addr.sll_ifindex =  req.ifr_ifindex;
+*/
+	while (1) {
+		/* testing code. */
+		int len = length;
+		if ((len = recv(sock, buf, length, 0)) < 0) {
+			perror("recv:");
+			goto err;
+		}
+		
+		sent = 0;
+		printf("sock: %d\n", sock);
+		int i, j;
+		for (i=0; i < len; i++) {
+			printf("%02x", buf[i]);
+			j = i + 1;
+			if (j%16 == 0)
 				printf("\n");
-				continue;
-			}
-			if ((j + 1)%16 == 0)
-				printf(" ");
+			else if (j%8 == 0)
+				printf("\t");
 		}
 		printf("\n");
+
+		while (sent < len) {
+		//	r = sendto(sock, buf + sent, len - sent, 0, (struct sockaddr*)&addr, sizeof(addr));
+			r = send(sock, buf + sent, len - sent, 0);
+			if (r < 0) {
+				fprintf(stderr, "send [%d]: %s\n", errno,
+					strerror(errno));
+				r = -1;
+				goto err;
+			}
+			sent += r;
+		}
+		printf("pkt send: [%d]\n", sent);
+		assert(sent == len);
+		sleep(5);
 	}
-	return 0;
+err:	
+	close(sock);
+	return r;
 }
 
 int main(int argc, char** argv)
 {
 	struct configs cfg;
-	unsigned char* buf;
-	unsigned int len;
+	unsigned char* buf = pkt_buf;
+	unsigned int len = 0;
 	
 	/* 1. deal with paremeters. format them into 'struct pktinfo'.*/
 	if (talk_with_me(argc, argv, &cfg) < 0) {
@@ -381,7 +414,14 @@ int main(int argc, char** argv)
 //		goto quit;
 
 	/* 3. Get a raw socket, then push pkt buffer off.*/
-	if (fucking_push() < 0)
+
+	/* TEMP: testing code for send func. */
+	len = 128;
+	int i;
+	for (i = 0; i < len; i++) {
+		buf[i] = 'a' + (i % ('z' -'a'));
+	}
+	if (fucking_push(buf, len) < 0)
 		goto quit;
 
 quit:
