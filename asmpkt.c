@@ -32,6 +32,7 @@
 #define ASM_ERR_PARM 0x00000001
 
 #define MAX_PKT_LEN ((2 << 16) - 1)
+#define MAX_IF_LEN 16
 
 uint32_t failure = ASM_ERR_NONE;
 
@@ -51,7 +52,8 @@ struct configs {
 	uint16_t dport;
 	/* payloads */
 	uint16_t length;
-	unsigned char buf[MAX_PKT_LEN];
+	char inf[MAX_IF_LEN];
+	char buf[MAX_PKT_LEN];
 } __attribute__((__packed__));
 
 int x2c(const char x)
@@ -196,7 +198,8 @@ int talk_with_me(int argc, char** argv, struct configs* cfg)
 	int r = 0;
 	int opt;
 	static int verbose_flag;
-	uint32_t flag = 0x000000FF;
+//	uint32_t flag = 0x000001FF;
+	uint32_t flag = 0x00000100;
 
 
 	while (1) {
@@ -299,7 +302,14 @@ int talk_with_me(int argc, char** argv, struct configs* cfg)
 			}
 			break;
 		case 'i':
-			fprintf(stderr, "argument for b: %s\n", optarg);
+			fprintf(stderr, "argument for i: %s\n", optarg);
+			if(strlen(optarg) >= MAX_IF_LEN - 1) {
+				fprintf(stderr, "if name is too long.");
+				failure |= ASM_ERR_PARM;
+				goto err;
+			}
+			flag ^= 0x0100;
+			strncpy(cfg->inf, optarg, MAX_IF_LEN-1);
 			break;
 /*
 		case '?':
@@ -314,14 +324,16 @@ int talk_with_me(int argc, char** argv, struct configs* cfg)
 			goto err;
 		}
 	}
-	if (flag != 0)
+	if (flag != 0) {
 		fprintf(stderr, "All 'must' arguments must be set [%u].\n",
 			flag);
+		r = -1;
+	}
 err:
 	return r;
 }
 
-int fucking_push(unsigned char* buf, size_t length)
+int fucking_push(struct configs* cfg, unsigned char* buf, size_t length)
 {
 	printf("go in fucking push!\n");
 	int sock;
@@ -336,7 +348,7 @@ int fucking_push(unsigned char* buf, size_t length)
 	addr.sll_protocol = htons(ETH_P_ALL);
 
 	struct ifreq req;
-	strncpy(req.ifr_name, "tap-dpdk-2", sizeof(req.ifr_name));
+	strncpy(req.ifr_name, cfg->inf, sizeof(req.ifr_name));
 	if (ioctl(sock, SIOCGIFINDEX, &req) < 0) {
 		perror("ioctl: ");
 		r = -1;
@@ -349,50 +361,32 @@ int fucking_push(unsigned char* buf, size_t length)
 		goto err;
 	}
 
-/*	strncpy(req.ifr_name, "tap-dpdk-2", sizeof(req.ifr_name));
-	if (ioctl(sock, SIOCGIFINDEX, &req) < 0) {
-		perror("ioctl: ");
-		r = -1;
-		goto err;
+	/* DEBUG: Packet for sending. */	
+	printf("sock: %d length: %zd\n", sock, length);
+	int i, j;
+	for (i=0; i < length; i++) {
+		printf("%02x", buf[i]);
+		j = i + 1;
+		if (j%16 == 0)
+			printf("\n");
+		else if (j%8 == 0)
+			printf("\t");
 	}
-	addr.sll_ifindex =  req.ifr_ifindex;
-*/
-	while (1) {
-		/* testing code. */
-		int len = length;
-		if ((len = recv(sock, buf, length, 0)) < 0) {
-			perror("recv:");
+	printf("\n");
+
+	sent = 0;
+	while (sent < length) {
+		r = send(sock, buf + sent, length - sent, 0);
+		if (r < 0) {
+			fprintf(stderr, "send [%d]: %s\n", errno,
+				strerror(errno));
+			r = -1;
 			goto err;
 		}
-		
-		sent = 0;
-		printf("sock: %d\n", sock);
-		int i, j;
-		for (i=0; i < len; i++) {
-			printf("%02x", buf[i]);
-			j = i + 1;
-			if (j%16 == 0)
-				printf("\n");
-			else if (j%8 == 0)
-				printf("\t");
-		}
-		printf("\n");
-
-		while (sent < len) {
-		//	r = sendto(sock, buf + sent, len - sent, 0, (struct sockaddr*)&addr, sizeof(addr));
-			r = send(sock, buf + sent, len - sent, 0);
-			if (r < 0) {
-				fprintf(stderr, "send [%d]: %s\n", errno,
-					strerror(errno));
-				r = -1;
-				goto err;
-			}
-			sent += r;
-		}
-		printf("pkt send: [%d]\n", sent);
-		assert(sent == len);
-		sleep(5);
+		sent += r;
 	}
+	printf("pkt send: [%d]\n", sent);
+	assert(sent == length);
 err:	
 	close(sock);
 	return r;
@@ -421,7 +415,7 @@ int main(int argc, char** argv)
 	for (i = 0; i < len; i++) {
 		buf[i] = 'a' + (i % ('z' -'a'));
 	}
-	if (fucking_push(buf, len) < 0)
+	if (fucking_push(&cfg, buf, len) < 0)
 		goto quit;
 
 quit:
