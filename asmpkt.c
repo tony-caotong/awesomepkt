@@ -186,11 +186,22 @@ int prepare_pkt(const struct configs* cfg, unsigned char* buf, size_t size)
 
 void my_usage(char* progname)
 {
-	fprintf(stderr, "%s Usage:\n", progname);
-	fprintf(stderr, "\txxx\n");
-	fprintf(stderr, "\tyyy\n");
-	fprintf(stderr, "CopyLeft @ 2017 by tong\n");
+	fprintf(stderr, "\nUsage: ");
+	fprintf(stderr, "\t%s -i tap-dpdk-2\n", progname);
+	fprintf(stderr, "\t-i <interface>\n");
+	fprintf(stderr, "\t\twhich network interface to sent.\n");
+	fprintf(stderr, "\t--dst_mac  <macaddr>\n");
+	fprintf(stderr, "\t--src_mac  <macaddr>\n");
+	fprintf(stderr, "\t--src_ip   <ipaddr>\n");
+	fprintf(stderr, "\t--dst_ip   <ipaddr>\n");
+	fprintf(stderr, "\t--protocol <tcp/udp>\n");
+	fprintf(stderr, "\t--dst_port <port>\n");
+	fprintf(stderr, "\t--src_port <port>\n");
+	fprintf(stderr, "\t--buffer   <buffer>\n");
+	fprintf(stderr, "\t--help\n");
 	fprintf(stderr, "\n");
+	fprintf(stderr, "\n");
+	fprintf(stderr, "CopyLeft @ 2017 by tong\n");
 }
 
 int talk_with_me(int argc, char** argv, struct configs* cfg)
@@ -404,17 +415,18 @@ int main(int argc, char** argv)
 	}
 
 	/* 2. Prepare packet buffer. transform 'pktinfo' into binary buffer. */
-//	if (prepare_pkt(&cfg, buf, &len) < 0)
-//		goto quit;
+	if (prepare_pkt(&cfg, buf, len) < 0)
+		goto quit;
 
-	/* 3. Get a raw socket, then push pkt buffer off.*/
-
-	/* TEMP: testing code for send func. */
+	/* TEMP: testing code for send func. 
 	len = 128;
 	int i;
 	for (i = 0; i < len; i++) {
 		buf[i] = 'a' + (i % ('z' -'a'));
 	}
+	*/
+
+	/* 3. Get a raw socket, then push pkt buffer off.*/
 	if (fucking_push(&cfg, buf, len) < 0)
 		goto quit;
 
