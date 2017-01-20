@@ -36,7 +36,7 @@
 
 uint32_t failure = ASM_ERR_NONE;
 
-unsigned char pkt_buf[MAX_PKT_LEN];
+char pkt_buf[MAX_PKT_LEN];
 
 struct configs {
 	/* Src Mac, Dst Mac*/
@@ -52,9 +52,28 @@ struct configs {
 	uint16_t dport;
 	/* payloads */
 	uint16_t length;
-	char inf[MAX_IF_LEN];
+	char ifname[MAX_IF_LEN];
 	char buf[MAX_PKT_LEN];
 } __attribute__((__packed__));
+
+
+void binary_print(char* capital, char* buf, size_t length)
+{
+	int i = 0;
+	
+	printf("Capital: [%s]\n", capital);
+	while(i < length) {
+		if (i%16 == 0)
+			printf("0x%016lx -- ", (unsigned long)&buf[i]);
+		printf("%02X", (unsigned char)buf[i]);
+		i++;
+		if (i%16 == 0)
+			printf("\n");
+		else if (i%8 == 0)
+			printf("\t");
+	}
+	printf("\n");
+}
 
 int x2c(const char x)
 {
@@ -100,20 +119,20 @@ err:
 }
 
 int prepare_tcp(const struct configs* cfg, struct iphdr* iph,
-				unsigned char* buf, size_t size)
+				char* buf, size_t size)
 {
 	return -1;
 }
 
 int prepare_udp(const struct configs* cfg, struct iphdr* iph,
-				unsigned char* buf, size_t size)
+				char* buf, size_t size)
 {
 	return -1;
 }
 
 
 int prepare_ipv4_payload(const struct configs* cfg, struct iphdr* iph,
-				unsigned char* buf, size_t size) 
+				char* buf, size_t size) 
 {
 /*	if (cfg->protocol == IPPROTO_TCP)
 		return prepare_tcp();
@@ -124,7 +143,7 @@ int prepare_ipv4_payload(const struct configs* cfg, struct iphdr* iph,
 		return -1;
 }
 
-int prepare_ipv4(const struct configs* cfg, unsigned char* buf, size_t size) 
+int prepare_ipv4(const struct configs* cfg, char* buf, size_t size) 
 {
 	int hdrlen, r;
 	struct iphdr* iph;
@@ -145,12 +164,12 @@ int prepare_ipv4(const struct configs* cfg, unsigned char* buf, size_t size)
 
 
 int prepare_ether_payload(const struct configs* cfg, struct ether_header* eh,
-		unsigned char* buf, size_t size) 
+		char* buf, size_t size) 
 {
 	return prepare_ipv4(cfg, buf, size);
 }
 
-int prepare_ethernet(const struct configs* cfg, unsigned char* buf,
+int prepare_ethernet(const struct configs* cfg, char* buf,
 			size_t size)
 {
 	int hdrlen, r;
@@ -179,7 +198,7 @@ int prepare_ethernet(const struct configs* cfg, unsigned char* buf,
 	}
 }
 
-int prepare_pkt(const struct configs* cfg, unsigned char* buf, size_t size)
+int prepare_pkt(const struct configs* cfg, char* buf, size_t size)
 {
 	return prepare_ethernet(cfg, buf, size);
 }
@@ -237,7 +256,7 @@ int talk_with_me(int argc, char** argv, struct configs* cfg)
 		switch (opt) {
 		case 0:
 			if (long_options[longindex].flag != 0)
-				flag ^= verbose_flag;
+				flag = flag & ~verbose_flag;
 			fprintf(stderr, "longopt: %s\n",
 				long_options[longindex].name);
 			switch(verbose_flag) {
@@ -304,10 +323,40 @@ int talk_with_me(int argc, char** argv, struct configs* cfg)
 				/* TODO: error detecting. */
 				cfg->dport = atoi(optarg);
 				break;
-			case 0x80:
-				cfg->length = strlen(optarg);
-				memcpy(cfg->buf, optarg, cfg->length);
+			case 0x80: {
+				int len, i;
+				len = strlen(optarg);
+				if (len % 2 != 0) {
+					fprintf(stderr, "length of buf must "\
+						"be double.\n");
+					failure |= ASM_ERR_PARM;
+					r = -1;
+					goto err;
+				}
+				for (i = 0; i<len/2 && i<MAX_PKT_LEN; i++) {
+					int v, tmp;
+					tmp = x2c(optarg[i*2]);
+					if (tmp < 0) {
+						failure |= ASM_ERR_PARM;
+						r = -1;
+						goto err;
+					}
+					v = tmp << 4;
+					tmp = x2c(optarg[i*2+1]);
+					if (tmp < 0) {
+						failure |= ASM_ERR_PARM;
+						r = -1;
+						goto err;
+					}
+					v += tmp;
+					/* DEBUG */
+					/*fprintf(stderr, "assign buf[%i]"\
+							"=[%02x]\n", i, v); */
+					cfg->buf[i] = v;
+				}
+				cfg->length = i;
 				break;
+			}
 			default:
 				break;
 			}
@@ -317,10 +366,11 @@ int talk_with_me(int argc, char** argv, struct configs* cfg)
 			if(strlen(optarg) >= MAX_IF_LEN - 1) {
 				fprintf(stderr, "if name is too long.");
 				failure |= ASM_ERR_PARM;
+				r = -1;
 				goto err;
 			}
-			flag ^= 0x0100;
-			strncpy(cfg->inf, optarg, MAX_IF_LEN-1);
+			flag = flag & ~0x0100;
+			strncpy(cfg->ifname, optarg, MAX_IF_LEN-1);
 			break;
 /*
 		case '?':
@@ -344,7 +394,7 @@ err:
 	return r;
 }
 
-int fucking_push(struct configs* cfg, unsigned char* buf, size_t length)
+int fucking_push(struct configs* cfg, char* buf, size_t length)
 {
 	printf("go in fucking push!\n");
 	int sock;
@@ -359,7 +409,7 @@ int fucking_push(struct configs* cfg, unsigned char* buf, size_t length)
 	addr.sll_protocol = htons(ETH_P_ALL);
 
 	struct ifreq req;
-	strncpy(req.ifr_name, cfg->inf, sizeof(req.ifr_name));
+	strncpy(req.ifr_name, cfg->ifname, sizeof(req.ifr_name));
 	if (ioctl(sock, SIOCGIFINDEX, &req) < 0) {
 		perror("ioctl: ");
 		r = -1;
@@ -374,16 +424,7 @@ int fucking_push(struct configs* cfg, unsigned char* buf, size_t length)
 
 	/* DEBUG: Packet for sending. */	
 	printf("sock: %d length: %zd\n", sock, length);
-	int i, j;
-	for (i=0; i < length; i++) {
-		printf("%02x", buf[i]);
-		j = i + 1;
-		if (j%16 == 0)
-			printf("\n");
-		else if (j%8 == 0)
-			printf("\t");
-	}
-	printf("\n");
+	binary_print("packet", buf, length);
 
 	sent = 0;
 	while (sent < length) {
@@ -406,17 +447,35 @@ err:
 int main(int argc, char** argv)
 {
 	struct configs cfg;
-	unsigned char* buf = pkt_buf;
-	unsigned int len = 0;
+	char* buf = pkt_buf;
+	int len = 0;
 	
 	/* 1. deal with paremeters. format them into 'struct pktinfo'.*/
 	if (talk_with_me(argc, argv, &cfg) < 0) {
+		fprintf(stderr, "talk_with_me() error.\n");
 		goto quit;
 	}
 
+	/* DEBUG: */
+	binary_print("PKT CFG: dst_mac", (void*)&cfg.dst_mac,
+			sizeof(cfg.dst_mac));
+	binary_print("PKT CFG: src_mac", (void*)&cfg.src_mac,
+			sizeof(cfg.src_mac));
+	binary_print("PKT CFG: daddr", (void*)&cfg.daddr, sizeof(cfg.daddr));
+	binary_print("PKT CFG: saddr", (void*)&cfg.saddr, sizeof(cfg.saddr));
+	binary_print("PKT CFG: dport", (void*)&cfg.dport, sizeof(cfg.dport));
+	binary_print("PKT CFG: sport", (void*)&cfg.sport, sizeof(cfg.sport));
+	binary_print("PKT CFG: protocol", (void*)&cfg.protocol,
+			sizeof(cfg.protocol));
+	binary_print("PKT CFG: ifname", (void*)&cfg.ifname,
+			sizeof(cfg.ifname));
+	binary_print("PKT CFG: buffer", (void*)&cfg.buf, cfg.length);
+
 	/* 2. Prepare packet buffer. transform 'pktinfo' into binary buffer. */
-	if (prepare_pkt(&cfg, buf, len) < 0)
+	if (prepare_pkt(&cfg, buf, len) < 0) {
+		fprintf(stderr, "prepare_pkt() error.\n");
 		goto quit;
+	}
 
 	/* TEMP: testing code for send func. 
 	len = 128;
@@ -427,9 +486,11 @@ int main(int argc, char** argv)
 	*/
 
 	/* 3. Get a raw socket, then push pkt buffer off.*/
-	if (fucking_push(&cfg, buf, len) < 0)
+	if (fucking_push(&cfg, buf, len) < 0) {
+		fprintf(stderr, "fucking_push() error.\n");
 		goto quit;
-
+	}
 quit:
+	fprintf(stderr, "exit(%d).\n", failure);
 	return failure;
 }
