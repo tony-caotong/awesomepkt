@@ -54,8 +54,17 @@ struct configs {
 	uint16_t length;
 	char ifname[MAX_IF_LEN];
 	char buf[MAX_PKT_LEN];
+	uint8_t raw:1;
+	uint8_t fix:1;
 } __attribute__((__packed__));
 
+void serial_fill(char* buf, size_t len)
+{
+	int i;
+	for (i = 0; i < len; i++) {
+		buf[i] = 'a' + (i % ('z' -'a'));
+	}
+}
 
 void binary_print(char* capital, char* buf, size_t length)
 {
@@ -67,7 +76,7 @@ void binary_print(char* capital, char* buf, size_t length)
 			printf("0x%016lx -- ", (unsigned long)&buf[i]);
 		printf("%02X", (unsigned char)buf[i]);
 		i++;
-		if (i%16 == 0)
+		if (i%16 == 0 && i != length)
 			printf("\n");
 		else if (i%8 == 0)
 			printf("\t");
@@ -184,7 +193,7 @@ int prepare_ethernet(const struct configs* cfg, char* buf,
 
 	/* TODO: calculate CRC. */
 
-	/* min length of ethernet package is 64. */
+	/* KEY: min length of ethernet package is 64. */
 	if (r < 0) {
 		return r;
 	} else if (r < 64 - hdrlen) {
@@ -217,6 +226,8 @@ void my_usage(char* progname)
 	fprintf(stderr, "\t--dst_port <port>\n");
 	fprintf(stderr, "\t--src_port <port>\n");
 	fprintf(stderr, "\t--buffer   <buffer>\n");
+	fprintf(stderr, "\t--fix      <length>\n");
+	fprintf(stderr, "\t--raw\n");
 	fprintf(stderr, "\t--help\n");
 	fprintf(stderr, "\n");
 	fprintf(stderr, "\n");
@@ -243,6 +254,8 @@ int talk_with_me(int argc, char** argv, struct configs* cfg)
 			{"dst_port", required_argument, &verbose_flag, 0x20},
 			{"src_port", required_argument, &verbose_flag, 0x40},
 			{"buffer", required_argument, &verbose_flag, 0x80},
+			{"fix", required_argument, &verbose_flag, 0x0100},
+			{"raw", no_argument, &verbose_flag, 0x0200},
 			{0,0,0,0}
 		};
 
@@ -357,6 +370,24 @@ int talk_with_me(int argc, char** argv, struct configs* cfg)
 				cfg->length = i;
 				break;
 			}
+			case 0x0100: /* fix */ {
+				char* tmp = NULL;
+				long int len;
+
+				cfg->fix = 1;
+				len = strtol(optarg, &tmp, 0);
+				if (strcmp(tmp, "\0") != 0) {
+					fprintf(stderr, "err param of fix.\n");
+					failure |= ASM_ERR_PARM;
+					r = -1;
+					goto err;
+				}
+				cfg->length = len;
+				break;
+			}
+			case 0x0200: /* raw */
+				cfg->raw= 1;
+				break;
 			default:
 				break;
 			}
@@ -388,6 +419,7 @@ int talk_with_me(int argc, char** argv, struct configs* cfg)
 	if (flag != 0) {
 		fprintf(stderr, "All 'must' arguments must be set [%u].\n",
 			flag);
+		my_usage(argv[0]);
 		r = -1;
 	}
 err:
@@ -456,34 +488,39 @@ int main(int argc, char** argv)
 		goto quit;
 	}
 
-	/* DEBUG: */
-	binary_print("PKT CFG: dst_mac", (void*)&cfg.dst_mac,
-			sizeof(cfg.dst_mac));
-	binary_print("PKT CFG: src_mac", (void*)&cfg.src_mac,
-			sizeof(cfg.src_mac));
-	binary_print("PKT CFG: daddr", (void*)&cfg.daddr, sizeof(cfg.daddr));
-	binary_print("PKT CFG: saddr", (void*)&cfg.saddr, sizeof(cfg.saddr));
-	binary_print("PKT CFG: dport", (void*)&cfg.dport, sizeof(cfg.dport));
-	binary_print("PKT CFG: sport", (void*)&cfg.sport, sizeof(cfg.sport));
-	binary_print("PKT CFG: protocol", (void*)&cfg.protocol,
-			sizeof(cfg.protocol));
-	binary_print("PKT CFG: ifname", (void*)&cfg.ifname,
-			sizeof(cfg.ifname));
-	binary_print("PKT CFG: buffer", (void*)&cfg.buf, cfg.length);
-
 	/* 2. Prepare packet buffer. transform 'pktinfo' into binary buffer. */
-	if (prepare_pkt(&cfg, buf, len) < 0) {
-		fprintf(stderr, "prepare_pkt() error.\n");
-		goto quit;
+	if (cfg.fix) {
+		serial_fill(cfg.buf, cfg.length);
 	}
+	if (cfg.raw) {
+		memcpy(buf, cfg.buf, cfg.length);
+		len = cfg.length;
+	} else {
+		/* DEBUG: */
+		binary_print("PKT CFG: dst_mac", (void*)&cfg.dst_mac,
+				sizeof(cfg.dst_mac));
+		binary_print("PKT CFG: src_mac", (void*)&cfg.src_mac,
+				sizeof(cfg.src_mac));
+		binary_print("PKT CFG: daddr", (void*)&cfg.daddr,
+				sizeof(cfg.daddr));
+		binary_print("PKT CFG: saddr", (void*)&cfg.saddr,
+				sizeof(cfg.saddr));
+		binary_print("PKT CFG: dport", (void*)&cfg.dport,
+				sizeof(cfg.dport));
+		binary_print("PKT CFG: sport", (void*)&cfg.sport,
+				sizeof(cfg.sport));
+		binary_print("PKT CFG: protocol", (void*)&cfg.protocol,
+				sizeof(cfg.protocol));
+		binary_print("PKT CFG: ifname", (void*)&cfg.ifname,
+				sizeof(cfg.ifname));
+		binary_print("PKT CFG: buffer", (void*)&cfg.buf, cfg.length);
 
-	/* TEMP: testing code for send func. 
-	len = 128;
-	int i;
-	for (i = 0; i < len; i++) {
-		buf[i] = 'a' + (i % ('z' -'a'));
+		/* 2B. Prepare pkt level by level. */
+		if ((len = prepare_pkt(&cfg, buf, len)) < 0) {
+			fprintf(stderr, "prepare_pkt() error.\n");
+			goto quit;
+		}
 	}
-	*/
 
 	/* 3. Get a raw socket, then push pkt buffer off.*/
 	if (fucking_push(&cfg, buf, len) < 0) {
