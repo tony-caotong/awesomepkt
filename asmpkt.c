@@ -31,6 +31,9 @@
 #define ASM_ERR_NONE 0x00000000
 #define ASM_ERR_PARM 0x00000001
 
+#define ASM_PROTO_ETH 0x0100
+#define ASM_PROTO_IP4 0x0200
+
 #define MAX_PKT_LEN ((2 << 16) - 1)
 #define MAX_IF_LEN 16
 
@@ -46,7 +49,7 @@ struct configs {
 	struct in_addr saddr;
 	struct in_addr daddr;
 	/* l4 protocol type */
-	uint8_t protocol;
+	uint16_t protocol;
 	/* sport. dport*/
 	uint16_t sport;
 	uint16_t dport;
@@ -106,6 +109,7 @@ int format_mac(char* str, struct ether_addr* addr)
 
 	/* 0. check the legality of mac_str's format. */
 	/* TODO: */
+	/* TODO: strlen() */
 	/* 2. format eth legality string to struct ether_addr. */
 	for (i = 0; i < ETH_ALEN; i++) {
 		int v, tmp;
@@ -175,7 +179,19 @@ int prepare_ipv4(const struct configs* cfg, char* buf, size_t size)
 int prepare_ether_payload(const struct configs* cfg, struct ether_header* eh,
 		char* buf, size_t size) 
 {
-	return prepare_ipv4(cfg, buf, size);
+	if (cfg->protocol == ASM_PROTO_ETH) {
+		if (cfg->length > size) {
+			fprintf(stderr, "buf is too long for ethernet pkt.\n");
+			return -1;
+		}
+		eh->ether_type = 0x0000;
+		memcpy(buf, cfg->buf, cfg->length);
+		return cfg->length;
+	} else if (cfg->protocol == ASM_PROTO_IP4) {
+		eh->ether_type = ETHERTYPE_IP;
+		return prepare_ipv4(cfg, buf, size);
+	}
+	return -1;
 }
 
 int prepare_ethernet(const struct configs* cfg, char* buf,
@@ -186,25 +202,22 @@ int prepare_ethernet(const struct configs* cfg, char* buf,
 
 	/* 1. format mac header. */
 	eh = (struct ether_header*)buf;
+	memcpy(eh->ether_dhost, &(cfg->dst_mac), ETH_ALEN);
+	memcpy(eh->ether_shost, &(cfg->src_mac), ETH_ALEN);
 	hdrlen = sizeof(struct ether_header);
+
+
+	/* TODO: MTU */
+	/* TODO: vlan */
 
 	/* 2. format ethernet payload. */
 	r = prepare_ether_payload(cfg, eh, buf+hdrlen, size-hdrlen);
 
-	/* TODO: calculate CRC. */
-
-	/* KEY: min length of ethernet package is 64. */
-	if (r < 0) {
-		return r;
-	} else if (r < 64 - hdrlen) {
-		int fillpad_len = 64 - hdrlen - r;
-		memset(buf+hdrlen+r, 0, fillpad_len);
-		return 64;
-	} else if (r <= MAX_PKT_LEN - hdrlen) {
-		return hdrlen + r;
-	} else {
-		return -1;
-	}
+	/* tip 1: As known, the min length of ethernet package is 64. Actually
+		port driver(maybe) will deal with it and padding to 64.
+	   tip 2: driver or hardware(mustbe) will calculate FCS.
+	*/
+	return r>0 ? r+hdrlen : r;
 }
 
 int prepare_pkt(const struct configs* cfg, char* buf, size_t size)
@@ -222,7 +235,7 @@ void my_usage(char* progname)
 	fprintf(stderr, "\t--src_mac  <macaddr>\n");
 	fprintf(stderr, "\t--src_ip   <ipaddr>\n");
 	fprintf(stderr, "\t--dst_ip   <ipaddr>\n");
-	fprintf(stderr, "\t--protocol <tcp/udp>\n");
+	fprintf(stderr, "\t--protocol <eth/ipv4/tcp/udp>\n");
 	fprintf(stderr, "\t--dst_port <port>\n");
 	fprintf(stderr, "\t--src_port <port>\n");
 	fprintf(stderr, "\t--buffer   <buffer>\n");
@@ -316,7 +329,11 @@ int talk_with_me(int argc, char** argv, struct configs* cfg)
 				break;
 			}
 			case 0x10:
-				if (strcasecmp("tcp", optarg) == 0) {
+				if (strcasecmp("eth", optarg) == 0) {
+					cfg->protocol = ASM_PROTO_ETH;
+				} else if (strcasecmp("ipv4", optarg) == 0) {
+					cfg->protocol = ASM_PROTO_IP4;
+				} else if (strcasecmp("tcp", optarg) == 0) {
 					cfg->protocol = IPPROTO_TCP;
 				} else if (strcasecmp("udp", optarg) == 0) {
 					cfg->protocol = IPPROTO_UDP;
