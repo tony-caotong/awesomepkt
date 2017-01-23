@@ -8,4 +8,4 @@ sudo ./asmpkt -i lo \
 
 # Note @ 2017-01-23
 Mainly, it is just using to generate some test pkts for Tartaglia, so it maybe
-pending it this version for a while.
+pending in this version for a while.
