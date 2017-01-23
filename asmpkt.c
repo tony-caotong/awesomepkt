@@ -201,26 +201,46 @@ int prepare_ipv4_payload(const struct configs* cfg, struct iphdr* iph,
 		r = prepare_tcp(cfg, iph, buf, size);
 	else if (cfg->l4_type == IPPROTO_UDP)
 		r = prepare_tcp(cfg, iph, buf, size);
+	else {
+		if (cfg->length > size) {
+			fprintf(stderr, "buf is too long for ethernet pkt.\n");
+			return -1;
+		}
+		memcpy(buf, cfg->buf, cfg->length);
+		r = cfg->length;
+	}
 	return r;
 }
 
 int prepare_ipv4(const struct configs* cfg, char* buf, size_t size) 
 {
-	int hdrlen, r;
+	static uint16_t id = 0;
+	int hdrlen, totlen, r;
 	struct iphdr* iph;
-	struct udphdr* udph __attribute((unused));
 
 	/* 1. format l4 header. */
 	iph = (struct iphdr*)(buf);
 	hdrlen = sizeof(struct iphdr);
+	iph->ihl = hdrlen / 4;
+	iph->version = 4;
+	iph->tos = 0x00;
+	iph->id = id++;
+	iph->frag_off = 0x0040;
+	iph->ttl = IPDEFTTL;
+	iph->protocol = cfg->l4_type;
+	iph->saddr = cfg->saddr.s_addr;
+	iph->daddr = cfg->daddr.s_addr;
 
 	/* 2. format payload. */
 	r = prepare_ipv4_payload(cfg, iph, buf+hdrlen, size-hdrlen);
 	if (r < 0)
 		return r;
+	totlen = r + hdrlen;
 	/* 3. fix length. */
-	/* TODO */
-	return hdrlen + r;
+	iph->tot_len = htons(totlen);
+	iph->check = 0x1234;
+
+	return totlen;
 }
 
 
@@ -230,7 +250,7 @@ int prepare_ether_payload(const struct configs* cfg, struct ether_header* eh,
 	int r = -1;
 
 	if (cfg->l3_type == ETHERTYPE_IP) {
-		eh->ether_type = ETHERTYPE_IP;
+		eh->ether_type = htons(ETHERTYPE_IP);
 		r = prepare_ipv4(cfg, buf, size);
 	} else if (cfg->l3_type == ETHERTYPE_IPV6) {
 		/* TODO */
