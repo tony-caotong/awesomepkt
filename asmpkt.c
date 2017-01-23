@@ -31,7 +31,7 @@
 #define ASM_ERR_NONE 0x00000000
 #define ASM_ERR_PARM 0x00000001
 
-#define MAX_PKT_LEN ((2 << 16) - 1)
+#define MAX_PKT_LEN ((1 << 16) - 1)
 #define MAX_IF_LEN 16
 
 uint32_t failure = ASM_ERR_NONE;
@@ -58,7 +58,7 @@ struct configs {
 	uint16_t sport;
 	uint16_t dport;
 	/* payloads */
-	uint16_t length;
+	uint32_t length;
 	char ifname[MAX_IF_LEN];
 	char buf[MAX_PKT_LEN];
 	uint8_t fix;
@@ -467,13 +467,14 @@ int talk_with_me(int argc, char** argv, struct configs* cfg)
 
 				cfg->fix = 1;
 				len = strtol(optarg, &tmp, 0);
-				if (strcmp(tmp, "\0") != 0) {
+				if (strcmp(tmp, "\0") != 0 
+						|| len > MAX_PKT_LEN) {
 					fprintf(stderr, "err param of fix.\n");
 					failure |= ASM_ERR_PARM;
 					r = -1;
 					goto err;
 				}
-				cfg->length = len;
+				cfg->length = len; 
 				break;
 			}
 			default:
@@ -568,7 +569,7 @@ int main(int argc, char** argv)
 {
 	struct configs cfg;
 	char* buf = pkt_buf;
-	int len = 0;
+	int len = 0, size = MAX_PKT_LEN;
 	
 	/* 1. deal with paremeters. format them into 'struct pktinfo'.*/
 	if (talk_with_me(argc, argv, &cfg) < 0) {
@@ -607,7 +608,7 @@ int main(int argc, char** argv)
 		binary_print("PKT CFG: buffer", (void*)&cfg.buf, cfg.length);
 
 		/* 2B. Prepare pkt level by level. */
-		if ((len = prepare_pkt(&cfg, buf, len)) < 0) {
+		if ((len = prepare_pkt(&cfg, buf, size)) < 0) {
 			fprintf(stderr, "prepare_pkt() error.\n");
 			goto quit;
 		}
