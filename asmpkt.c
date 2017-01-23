@@ -31,9 +31,6 @@
 #define ASM_ERR_NONE 0x00000000
 #define ASM_ERR_PARM 0x00000001
 
-#define ASM_PROTO_ETH 0x0100
-#define ASM_PROTO_IP4 0x0200
-
 #define MAX_PKT_LEN ((2 << 16) - 1)
 #define MAX_IF_LEN 16
 
@@ -49,7 +46,14 @@ struct configs {
 	struct in_addr saddr;
 	struct in_addr daddr;
 	/* l4 protocol type */
-	uint16_t protocol;
+	union {
+		uint32_t ptype;
+		struct {
+			uint32_t l2_type:8;
+			uint32_t l3_type:16;
+			uint32_t l4_type:8;
+		};
+	};
 	/* sport. dport*/
 	uint16_t sport;
 	uint16_t dport;
@@ -57,8 +61,7 @@ struct configs {
 	uint16_t length;
 	char ifname[MAX_IF_LEN];
 	char buf[MAX_PKT_LEN];
-	uint8_t raw:1;
-	uint8_t fix:1;
+	uint8_t fix;
 } __attribute__((__packed__));
 
 void serial_fill(char* buf, size_t len)
@@ -67,6 +70,51 @@ void serial_fill(char* buf, size_t len)
 	for (i = 0; i < len; i++) {
 		buf[i] = 'a' + (i % ('z' -'a'));
 	}
+}
+
+/* TODO: difference values for different endian.
+ * current we only support little-endian.
+ */
+#define ASM_PROTO_RAW 0x01
+#define ASM_PROTO_ETH 0x02
+#define ASM_PROTO_IP4 ETHERTYPE_IP << 8
+#define ASM_PROTO_IP6 ETHERTYPE_IPV6 << 8
+#define ASM_PROTO_TCP IPPROTO_TCP << 24
+#define ASM_PROTO_UDP IPPROTO_UDP << 24
+
+uint32_t getmask(uint32_t type)
+{
+	uint32_t mask;
+	switch (type) {
+	case ASM_PROTO_RAW:
+	case ASM_PROTO_ETH:
+		mask = 0xFFFFFF00;
+		break;
+	case ASM_PROTO_IP4:
+	case ASM_PROTO_IP6:
+		mask = 0xFF0000FF;
+		break;
+	case ASM_PROTO_TCP:
+	case ASM_PROTO_UDP:
+		mask = 0x00FFFFFF;
+		break;
+	}
+	return mask;
+}
+
+int set_ptype(struct configs* cfg, uint32_t type)
+{
+	uint32_t mask;
+	uint32_t value;
+
+	mask = getmask(type);
+	value = cfg->ptype & ~mask;
+
+	if (value != 0) {
+		return -1;
+	}
+	cfg->ptype |= type;
+	return 0;
 }
 
 void binary_print(char* capital, char* buf, size_t length)
@@ -147,13 +195,13 @@ int prepare_udp(const struct configs* cfg, struct iphdr* iph,
 int prepare_ipv4_payload(const struct configs* cfg, struct iphdr* iph,
 				char* buf, size_t size) 
 {
-/*	if (cfg->protocol == IPPROTO_TCP)
-		return prepare_tcp();
-	else if (cfg->protocol == IPPROTO_UDP)
-		return prepare_tcp();
-	else
-*/
-		return -1;
+	int r = -1;
+
+	if (cfg->l4_type == IPPROTO_TCP)
+		r = prepare_tcp(cfg, iph, buf, size);
+	else if (cfg->l4_type == IPPROTO_UDP)
+		r = prepare_tcp(cfg, iph, buf, size);
+	return r;
 }
 
 int prepare_ipv4(const struct configs* cfg, char* buf, size_t size) 
@@ -179,19 +227,23 @@ int prepare_ipv4(const struct configs* cfg, char* buf, size_t size)
 int prepare_ether_payload(const struct configs* cfg, struct ether_header* eh,
 		char* buf, size_t size) 
 {
-	if (cfg->protocol == ASM_PROTO_ETH) {
+	int r = -1;
+
+	if (cfg->l3_type == ETHERTYPE_IP) {
+		eh->ether_type = ETHERTYPE_IP;
+		r = prepare_ipv4(cfg, buf, size);
+	} else if (cfg->l3_type == ETHERTYPE_IPV6) {
+		/* TODO */
+	} else {
 		if (cfg->length > size) {
 			fprintf(stderr, "buf is too long for ethernet pkt.\n");
 			return -1;
 		}
 		eh->ether_type = 0x0000;
 		memcpy(buf, cfg->buf, cfg->length);
-		return cfg->length;
-	} else if (cfg->protocol == ASM_PROTO_IP4) {
-		eh->ether_type = ETHERTYPE_IP;
-		return prepare_ipv4(cfg, buf, size);
+		r = cfg->length;
 	}
-	return -1;
+	return r;
 }
 
 int prepare_ethernet(const struct configs* cfg, char* buf,
@@ -222,7 +274,12 @@ int prepare_ethernet(const struct configs* cfg, char* buf,
 
 int prepare_pkt(const struct configs* cfg, char* buf, size_t size)
 {
-	return prepare_ethernet(cfg, buf, size);
+	int r = -1;
+
+	if (cfg->l2_type == ASM_PROTO_ETH) {
+		r = prepare_ethernet(cfg, buf, size);
+	}
+	return r;
 }
 
 void my_usage(char* progname)
@@ -235,12 +292,12 @@ void my_usage(char* progname)
 	fprintf(stderr, "\t--src_mac  <macaddr>\n");
 	fprintf(stderr, "\t--src_ip   <ipaddr>\n");
 	fprintf(stderr, "\t--dst_ip   <ipaddr>\n");
-	fprintf(stderr, "\t--protocol <eth/ipv4/tcp/udp>\n");
+	fprintf(stderr, "\t--ptype <raw/eth/ipv4/ipv6/tcp/udp>\n");
+	fprintf(stderr, "\t\tipv4 is default.\n");
 	fprintf(stderr, "\t--dst_port <port>\n");
 	fprintf(stderr, "\t--src_port <port>\n");
 	fprintf(stderr, "\t--buffer   <buffer>\n");
 	fprintf(stderr, "\t--fix      <length>\n");
-	fprintf(stderr, "\t--raw\n");
 	fprintf(stderr, "\t--help\n");
 	fprintf(stderr, "\n");
 	fprintf(stderr, "\n");
@@ -263,12 +320,11 @@ int talk_with_me(int argc, char** argv, struct configs* cfg)
 			{"src_mac", required_argument, &verbose_flag, 0x02},
 			{"src_ip", required_argument, &verbose_flag, 0x04},
 			{"dst_ip", required_argument, &verbose_flag, 0x08},
-			{"protocol", required_argument, &verbose_flag, 0x10},
+			{"ptype", required_argument, &verbose_flag, 0x10},
 			{"dst_port", required_argument, &verbose_flag, 0x20},
 			{"src_port", required_argument, &verbose_flag, 0x40},
 			{"buffer", required_argument, &verbose_flag, 0x80},
 			{"fix", required_argument, &verbose_flag, 0x0100},
-			{"raw", no_argument, &verbose_flag, 0x0200},
 			{0,0,0,0}
 		};
 
@@ -328,23 +384,41 @@ int talk_with_me(int argc, char** argv, struct configs* cfg)
 				cfg->daddr = tmp;
 				break;
 			}
-			case 0x10:
-				if (strcasecmp("eth", optarg) == 0) {
-					cfg->protocol = ASM_PROTO_ETH;
+			case 0x10: {
+				uint32_t type;
+				if (strcasecmp("raw", optarg) == 0) {
+					type = ASM_PROTO_RAW;
+				} else if (strcasecmp("eth", optarg) == 0) {
+					type = ASM_PROTO_ETH;
 				} else if (strcasecmp("ipv4", optarg) == 0) {
-					cfg->protocol = ASM_PROTO_IP4;
+					type = ASM_PROTO_IP4;
+				} else if (strcasecmp("ipv6", optarg) == 0) {
+					type = ASM_PROTO_IP6;
+					fprintf(stderr, "ipv6 is not "\
+						"supporting right now.\n");
+					failure |= ASM_ERR_PARM;
+					r = -1;
+					goto err;
 				} else if (strcasecmp("tcp", optarg) == 0) {
-					cfg->protocol = IPPROTO_TCP;
+					type = ASM_PROTO_TCP;
 				} else if (strcasecmp("udp", optarg) == 0) {
-					cfg->protocol = IPPROTO_UDP;
+					type = ASM_PROTO_UDP;
 				} else {
 					fprintf(stderr, "error parameter "\
 						"format of: %s\n",
 						long_options[longindex].name);
 					failure |= ASM_ERR_PARM;
+					r = -1;
+					goto err;
+				}
+				if (set_ptype(cfg, type) < 0) {
+					fprintf(stderr, "ptype conflicts.\n");
+					failure |= ASM_ERR_PARM;
+					r = -1;
 					goto err;
 				}
 				break;
+			}
 			case 0x20:
 				/* TODO: error detecting. */
 				cfg->sport = atoi(optarg);
@@ -402,9 +476,6 @@ int talk_with_me(int argc, char** argv, struct configs* cfg)
 				cfg->length = len;
 				break;
 			}
-			case 0x0200: /* raw */
-				cfg->raw= 1;
-				break;
 			default:
 				break;
 			}
@@ -509,7 +580,7 @@ int main(int argc, char** argv)
 	if (cfg.fix) {
 		serial_fill(cfg.buf, cfg.length);
 	}
-	if (cfg.raw) {
+	if (cfg.l2_type == ASM_PROTO_RAW) {
 		memcpy(buf, cfg.buf, cfg.length);
 		len = cfg.length;
 	} else {
@@ -526,8 +597,11 @@ int main(int argc, char** argv)
 				sizeof(cfg.dport));
 		binary_print("PKT CFG: sport", (void*)&cfg.sport,
 				sizeof(cfg.sport));
-		binary_print("PKT CFG: protocol", (void*)&cfg.protocol,
-				sizeof(cfg.protocol));
+		binary_print("PKT CFG: ptype", (void*)&cfg.ptype,
+				sizeof(cfg.ptype));
+		fprintf(stderr, "PKT CFG: l2_type : %02x\n", cfg.l2_type);
+		fprintf(stderr, "PKT CFG: l3_type : %04x\n", cfg.l3_type);
+		fprintf(stderr, "PKT CFG: l4_type : %02x\n", cfg.l4_type);
 		binary_print("PKT CFG: ifname", (void*)&cfg.ifname,
 				sizeof(cfg.ifname));
 		binary_print("PKT CFG: buffer", (void*)&cfg.buf, cfg.length);
