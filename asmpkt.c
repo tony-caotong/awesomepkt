@@ -1,9 +1,8 @@
 /**
 *	Awesome packet.
-*		by Cao Tong<tony_caotong@gmail.com> 
+*		by Cao Tong<tony.caotong@gmail.com> 
 *		at 2017-01-13
 */
-
 
 #include <stdio.h>
 #include <stdint.h>
